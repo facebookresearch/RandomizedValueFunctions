@@ -21,9 +21,9 @@ class DQN(nn.Module):
     def __init__(self, args, action_space):
         nn.Module.__init__(self)
         self.features = nn.Sequential(
-            nn.Linear(args.input_dim, 16),
+            nn.Linear(args.input_dim, 128),
             nn.ReLU(inplace=True),
-            nn.Linear(16, 16),
+            nn.Linear(128, 16),
             nn.ReLU(inplace=True)
         )
         self.last_layer = nn.Linear(16, action_space)

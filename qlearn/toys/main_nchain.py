@@ -4,7 +4,9 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 #
-
+import os, sys
+import sys
+sys.path.append('/home/soopark0221/multiagent/RandomizedValueFunctions/baselines')
 
 import argparse
 import time
@@ -27,6 +29,7 @@ from qlearn.toys.mnf_agent import MNFAgent
 from qlearn.envs.nchain import NChainEnv
 # from qlearn.toys.memory import ReplayBuffer
 from qlearn.toys.test import test
+from qlearn.envs.grid_envs import ZigZag6x10
 
 
 parser = argparse.ArgumentParser(description='DQN')
@@ -58,6 +61,13 @@ parser.add_argument('--n-flows-r', type=int, default=int(1), help='number of nor
 parser.add_argument('--logdir', type=str, default='logs', help='log directory')
 parser.add_argument('--double-q', type=int, default=1, help='whether or not to use Double DQN')
 
+parser.add_argument('--swag_start', default=1000, type=int, help='')
+parser.add_argument('--swag_lr', default=0.0001, type=float, help='')
+parser.add_argument('--sample_freq', default=30, type=int, help='')
+parser.add_argument('--alg', default='ddpg', type=str, help='agent algorithm [ddpg, swag, wol]')
+parser.add_argument('--discrete', action='store_true', help='discrete env')
+parser.add_argument('--env', default='nchain', type=str, help='[nchain, lava]')
+
 # Setup
 args = parser.parse_args()
 assert args.agent in ['DQN', 'BootstrappedDQN', 'NoisyDQN', 'BayesBackpropDQN', 'MNFDQN']
@@ -73,12 +83,15 @@ if args.cuda:
     torch.cuda.manual_seed(args.seed)
 
 # Environment
-env = NChainEnv(args.input_dim)
+if args.env == 'nchain':
+    env = NChainEnv(args.input_dim)
+elif args.env == 'lava':
+    env = ZigZag6x10(max_steps=300, act_fail_prob=0, goal=(5, 9), numpy_state=False)
 action_space = env.action_space.n
 
 # Log
 date = time.strftime('%Y-%m-%d.%H%M')
-run_dir = '{}/{}-{}-{}'.format(args.logdir, 'Nchain', args.agent, date)
+run_dir = '{}/{}-{}-{}'.format(args.logdir, args.env, args.agent, date)
 
 log = SummaryWriter(run_dir)
 print('Writing logs to {}'.format(run_dir))
@@ -109,8 +122,8 @@ dqn.online_net.train()
 timestamp = 0
 for episode in range(args.max_episodes):
 
-    epsilon = exploration.value(episode)
-
+    #epsilon = exploration.value(episode)
+    epsilon = 0.01
     state, done = env.reset(), False
     if args.agent == 'BootstrappedDQN':
         k = random.randrange(args.nheads)
@@ -120,6 +133,10 @@ for episode in range(args.max_episodes):
         dqn.online_net.reset_noise()
     elif args.agent == 'MNFDQN':
         dqn.online_net.reset_noise()
+    
+    if args.alg == 'swag' and episode > args.swag_start+50:
+        dqn.swag_sample()
+
     while not done:
         timestamp += 1
 
@@ -128,8 +145,13 @@ for episode in range(args.max_episodes):
         elif args.agent in ['NoisyDQN', 'BayesBackpropDQN', 'MNFDQN']:
             action = dqn.act(state[None], eval=False)
         elif args.agent == 'DQN':
-            action = dqn.act_e_greedy(state[None], epsilon=epsilon)
-
+            if args.alg == 'swag':
+                if episode <= args.swag_start+50:
+                    action = dqn.act_e_greedy(state[None], epsilon=epsilon)
+                else:
+                    action = dqn.swag_act(state[None])
+            else:
+                action = dqn.act_e_greedy(state[None], epsilon=epsilon)
         next_state, reward, done, _ = env.step(int(action))
         # Store the transition in memory
         replay_buffer.add(state, action, reward, next_state, float(done))
@@ -142,7 +164,7 @@ for episode in range(args.max_episodes):
 
     if timestamp > args.learning_starts:
         obses_t, actions, rewards, obses_tp1, dones = replay_buffer.sample(args.batch_size)
-        loss = dqn.learn(obses_t, actions, rewards, obses_tp1, dones)
+        loss = dqn.learn(obses_t, actions, rewards, obses_tp1, dones, episode)
         log.add_scalar('loss', loss, timestamp)
 
     # if episode % 10 == 0:

@@ -40,7 +40,10 @@ class NChainEnv(gym.Env):
             if self.state != 0:
                 self.state -= 1
         self.nsteps += 1
-        return (v <= self.state).astype('float32'), r, is_done(self.nsteps), None
+        s = np.zeros(self.n)
+        s[self.state]=1
+        #return (v <= self.state).astype('float32'), r, is_done(self.nsteps), None
+        return s, r, is_done(self.nsteps), None
 
     def reset(self):
         v = np.arange(self.n)

@@ -5,6 +5,9 @@
 # LICENSE file in the root directory of this source tree.
 #
 
+import sys
+sys.path.append('/home/soopark0221/multiagent/RandomizedValueFunctions/qlearn/toys')
+sys.path.append('/home/soopark0221/multiagent/RandomizedValueFunctions/')
 
 import os
 import random
