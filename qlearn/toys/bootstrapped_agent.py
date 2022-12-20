@@ -47,12 +47,12 @@ class BootstrappedAgent():
     # Acts based on single state (no batch)
     def act_single_head(self, state, k):
         self.online_net.eval()
-        state = Variable(self.FloatTensor(state / 255.0))
+        state = Variable(self.FloatTensor(state))
         return self.online_net.forward_single_head(state, k).data.max(1)[1][0]
 
     def act(self, state):
         self.online_net.eval()
-        state = Variable(self.FloatTensor(state / 255.0))
+        state = Variable(self.FloatTensor(state))
         outputs = self.online_net.forward(state)
         actions = []
         for k in range(self.online_net.nheads):
@@ -63,11 +63,12 @@ class BootstrappedAgent():
     # Acts with an epsilon-greedy policy
     def act_e_greedy(self, state, k, epsilon=0.01):
         return random.randrange(self.action_space) if random.random() < epsilon else self.act_single_head(state, k)
+        #return random.randrange(self.action_space) if random.random() < epsilon else self.act(state)
 
     def update_target_net(self):
         self.target_net.load_state_dict(self.online_net.state_dict())
 
-    def learn(self, states, actions, rewards, next_states, terminals):
+    def learn(self, states, actions, rewards, next_states, terminals, episode):
         self.online_net.train()
         self.target_net.eval()
         states = Variable(self.FloatTensor(states))
