@@ -122,8 +122,8 @@ dqn.online_net.train()
 timestamp = 0
 for episode in range(args.max_episodes):
 
-    #epsilon = exploration.value(episode)
-    epsilon = 0.01
+    epsilon = exploration.value(episode)
+    #epsilon = 0.01
     state, done = env.reset(), False
     if args.agent == 'BootstrappedDQN':
         k = random.randrange(args.nheads)

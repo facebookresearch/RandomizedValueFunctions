@@ -78,7 +78,7 @@ class Agent():
     def swag_sample(self):
         self.swag_net_list = []
         for i in range(1):
-            self.swag_net.sample(self.sample_net, 0.8)
+            self.swag_net.sample(self.sample_net, 0.9)
             self.swag_net_list.append(self.sample_net)
 
     # Acts with an epsilon-greedy policy
