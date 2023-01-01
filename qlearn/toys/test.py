@@ -17,7 +17,11 @@ def test(args, env, dqn):
 
     # Test performance over several episodes
     done = True
-    dqn.online_net.eval()
+    if args.agent == 'MultiDQN':
+        for i in range(2):
+            dqn[i].online_net.eval()
+    else:
+        dqn.online_net.eval()
     # dqn.online_net.freeze_noise()
     for _ in range(args.evaluation_episodes):
         while True:
@@ -31,10 +35,13 @@ def test(args, env, dqn):
                 action = dqn.act(state[None])
             elif args.agent == 'BootstrappedDQN':
                 action = dqn.act(state[None]) 
+            elif args.agent == 'MultiDQN':
+                action = []
+                for i in range(2):
+                    action.append(dqn[i].act(state[None]))
                    # Choose an action greedily
-            state, reward, done, _ = env.step(int(action))  # Step
+            state, reward, done, _ = env.step(action if args.agent == 'MultiDQN' else int(action)) # Step
             reward_sum += reward
-
             if done:
                 rewards.append(reward_sum)
                 break
@@ -42,3 +49,4 @@ def test(args, env, dqn):
 
     # return average reward
     return sum(rewards) / len(rewards)
+

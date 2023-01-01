@@ -22,11 +22,14 @@ from baselines.common.schedules import LinearSchedule
 from baselines.deepq.replay_buffer import ReplayBuffer
 
 from qlearn.toys.agent import Agent
+from qlearn.toys.multiagent import MultiAgent
 from qlearn.toys.bootstrapped_agent import BootstrappedAgent
 from qlearn.toys.bayes_backprop_agent import BayesBackpropAgent
 from qlearn.toys.noisy_agent import NoisyAgent
 from qlearn.toys.mnf_agent import MNFAgent
 from qlearn.envs.nchain import NChainEnv
+from qlearn.envs.multinchain import MultiNChainEnv
+
 # from qlearn.toys.memory import ReplayBuffer
 from qlearn.toys.test import test
 from qlearn.envs.grid_envs import ZigZag6x10
@@ -39,7 +42,7 @@ parser.add_argument('--max-steps', type=int, default=int(50e6), metavar='STEPS',
 
 parser.add_argument('--evaluation-episodes', type=int, default=1, metavar='N', help='Number of evaluation episodes to average over')
 parser.add_argument('--model', type=str, metavar='PARAMS', help='Pretrained model (state dict)')
-parser.add_argument('--replay_buffer_size', type=int, default=int(10000), metavar='CAPACITY', help='Experience replay memory capacity')
+parser.add_argument('--replay_buffer_size', type=int, default=int(100000), metavar='CAPACITY', help='Experience replay memory capacity')
 parser.add_argument('--learning-freq', type=int, default=10, metavar='k', help='Frequency of sampling from memory')
 parser.add_argument("--learning-starts", type=int, default=32, help="number of iterations after which learning starts")
 parser.add_argument('--discount', type=float, default=0.999, metavar='GAMMA', help='Discount factor')
@@ -66,11 +69,11 @@ parser.add_argument('--swag_lr', default=0.0001, type=float, help='')
 parser.add_argument('--sample_freq', default=30, type=int, help='')
 parser.add_argument('--alg', default='ddpg', type=str, help='agent algorithm [ddpg, swag, wol]')
 parser.add_argument('--discrete', action='store_true', help='discrete env')
-parser.add_argument('--env', default='nchain', type=str, help='[nchain, lava]')
+parser.add_argument('--env', default='nchain', type=str, help='[nchain, lava, multinchain]')
 
 # Setup
 args = parser.parse_args()
-assert args.agent in ['DQN', 'BootstrappedDQN', 'NoisyDQN', 'BayesBackpropDQN', 'MNFDQN']
+assert args.agent in ['DQN', 'BootstrappedDQN', 'NoisyDQN', 'BayesBackpropDQN', 'MNFDQN', 'MultiDQN']
 
 print(' ' * 26 + 'Options')
 for k, v in vars(args).items():
@@ -85,8 +88,9 @@ if args.cuda:
 # Environment
 if args.env == 'nchain':
     env = NChainEnv(args.input_dim)
-elif args.env == 'lava':
-    env = ZigZag6x10(max_steps=300, act_fail_prob=0, goal=(5, 9), numpy_state=False)
+elif args.env == 'multinchain':
+    env = MultiNChainEnv(args.input_dim)
+
 action_space = env.action_space.n
 
 # Log
@@ -105,6 +109,8 @@ elif args.agent == 'BayesBackpropDQN':
     dqn = BayesBackpropAgent(args, env)
 elif args.agent == 'MNFDQN':
     dqn = MNFAgent(args, env)
+elif args.agent == 'MultiDQN':
+    dqn = [MultiAgent(args, env, i) for i in range(2)]
 else:
     dqn = Agent(args, env)
 
@@ -118,10 +124,15 @@ exploration = LinearSchedule(args.final_exploration_step, args.final_exploration
 # pdb.set_trace()
 
 # Training loop
-dqn.online_net.train()
+if args.agent == 'MultiDQN':
+    for i in range(2):
+        dqn[i].online_net.train()
+else:
+    dqn.online_net.train()
+
 timestamp = 0
 for episode in range(args.max_episodes):
-
+    episode_rew = 0
     epsilon = exploration.value(episode)
     #epsilon = 0.01
     state, done = env.reset(), False
@@ -133,9 +144,17 @@ for episode in range(args.max_episodes):
         dqn.online_net.reset_noise()
     elif args.agent == 'MNFDQN':
         dqn.online_net.reset_noise()
-    
+
     if args.alg == 'swag' and episode > args.swag_start+50:
-        dqn.swag_sample()
+        if args.agent == 'DQN':
+            if episode < 700:
+                scale = 0.9
+            else:
+                scale = 0.0
+            dqn.swag_sample(scale=scale)
+        elif args.agent == 'MultiDQN':
+            for i in range(2):
+                dqn[i].swag_sample(scale=scale)
 
     while not done:
         timestamp += 1
@@ -152,20 +171,43 @@ for episode in range(args.max_episodes):
                     action = dqn.swag_act(state[None])
             else:
                 action = dqn.act_e_greedy(state[None], epsilon=epsilon)
-        next_state, reward, done, _ = env.step(int(action))
+        elif args.agent == 'MultiDQN':
+            action = []
+            for i in range(2):                    
+                if args.alg == 'swag': 
+                    if episode <= args.swag_start+50:
+                        action.append(dqn[i].act_e_greedy(state[None], epsilon=epsilon))
+                    else:
+                        action.append(dqn[i].swag_act(state[None]))
+                else:
+                    action.append(dqn[i].act_e_greedy(state[None], epsilon=epsilon))
+        next_state, reward, done, _ = env.step(action if args.agent == 'MultiDQN' else int(action))
         # Store the transition in memory
         replay_buffer.add(state, action, reward, next_state, float(done))
+        episode_rew += reward
 
         # Move to the next state
         state = next_state
         #
         if timestamp % args.target_update_freq == 0:
-            dqn.update_target_net()
+            try:
+                dqn.update_target_net()
+            except: # if multiagent
+                for i in range(2): 
+                    dqn[i].update_target_net()
 
     if timestamp > args.learning_starts:
         obses_t, actions, rewards, obses_tp1, dones = replay_buffer.sample(args.batch_size)
-        loss = dqn.learn(obses_t, actions, rewards, obses_tp1, dones, episode)
-        log.add_scalar('loss', loss, timestamp)
+        #print(actions)
+        if args.agent == 'MultiDQN':
+            loss = 0
+            for a_i in range(2):
+                loss += dqn[a_i].learn(obses_t, actions, rewards, obses_tp1, dones, episode, dqn[1-a_i])
+            loss /= 2
+
+        else:      
+            loss = dqn.learn(obses_t, actions, rewards, obses_tp1, dones, episode)
+        #log.add_scalar('loss', loss, timestamp)
 
     # if episode % 10 == 0:
     #     visited = []
@@ -176,3 +218,5 @@ for episode in range(args.max_episodes):
     if episode > 4:
         avg_reward = test(args, env, dqn)  # Test
         print('episode: ' + str(episode) + ', Avg. reward: ' + str(round(avg_reward, 4)))
+        log.add_scalar('test_reward', avg_reward, episode)
+        log.add_scalar('episode_reward', episode_rew, episode)

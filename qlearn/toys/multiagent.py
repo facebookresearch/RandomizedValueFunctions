@@ -15,28 +15,27 @@ import torch
 import torch.nn.functional as F
 from torch import optim
 from torch.autograd import Variable
-from qlearn.toys.model import DQN
+from qlearn.toys.model import MultiDQN
 from swag_misc import SWAG
 import swag_utils
 from utils import *
 
-class Agent():
-    def __init__(self, args, env):
+class MultiAgent():
+    def __init__(self, args, env, idx):
         self.action_space = env.action_space.n
         self.batch_size = args.batch_size
         self.discount = args.discount
         self.double_q = args.double_q
 
-        self.online_net = DQN(args, self.action_space)
+        self.online_net = MultiDQN(args, self.action_space)
         if args.model and os.path.isfile(args.model):
             self.online_net.load_state_dict(torch.load(args.model))
         self.online_net.train()
 
         self.sample_net = self.online_net
-        #self.sample_net = DQN(args, self.action_space)
         #hard_update(self.sample_net, self.online_net)
             
-        self.target_net = DQN(args, self.action_space)
+        self.target_net = MultiDQN(args, self.action_space)
         self.update_target_net()
         self.target_net.eval()
         for param in self.target_net.parameters():
@@ -58,22 +57,20 @@ class Agent():
         self.swag = (args.alg == 'swag')
         self.max_episode= args.max_episodes
 
-        # lr scheduler
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimiser, T_max=100, eta_min=0) #torch.optim.lr_scheduler.MultiStepLR(self.optimiser, milestones=[i for i in range(1000, 2000, 100)], gamma=0.9)
-
+        self.idx = idx
     # Acts based on single state (no batch)
     def act(self, state):
         self.online_net.eval()
         state = Variable(self.FloatTensor(state))
-
-        return self.online_net(state).data.max(1)[1][0]
+        a = self.online_net(state).data[0][self.idx*2:self.idx*2+2].unsqueeze(0).max(1)[1][0]
+        return a
 
     def swag_act(self, state):
         self.online_net.eval()
         state = Variable(self.FloatTensor(state))
         a = []
         for net in self.swag_net_list:
-            a.append(net(state).data)
+            a.append(net(state).data[0][self.idx*2:self.idx*2+2].unsqueeze(0))
             #print(f'1 {net(state).data}')
         #print(f'********************')
 
@@ -81,12 +78,11 @@ class Agent():
         a = torch.mean(torch.Tensor.float(a), dim=0)
         return a.max(1)[1][0]
 
-    def swag_sample(self, scale=0.9):
+    def swag_sample(self):
         self.swag_net_list = []
         for i in range(1):
-            self.swag_net.sample(self.sample_net, scale=scale)
+            self.swag_net.sample(self.sample_net, 0.9)
             self.swag_net_list.append(self.sample_net)
-        #self.swag_net.set_swa(target_model=self.online_net)
 
     # Acts with an epsilon-greedy policy
     def act_e_greedy(self, state, epsilon=0.01):
@@ -95,7 +91,7 @@ class Agent():
     def update_target_net(self):
         self.target_net.load_state_dict(self.online_net.state_dict())
 
-    def learn(self, states, actions, rewards, next_states, terminals,episode):
+    def learn(self, states, actions, rewards, next_states, terminals, episode, a_other):
         self.online_net.train()
         self.target_net.eval()
 
@@ -105,22 +101,18 @@ class Agent():
         next_states = Variable(self.FloatTensor(next_states))
         rewards = Variable(self.FloatTensor(rewards)).view(-1, 1)
         terminals = Variable(self.FloatTensor(terminals)).view(-1, 1)
-        # import pdb
-        # pdb.set_trace()
-        # Compute Q(s_t, a) - the model computes Q(s_t), then we select the
-        # columns of actions taken
-        state_action_values = self.online_net(states).gather(1, actions.view(-1, 1))
-
+        actions = torch.index_select(actions, 1, torch.tensor([self.idx]))
+        state_action_values = self.online_net(states).gather(1, self.idx*2 + actions.view(-1, 1))
         if self.double_q:
-            next_actions = self.online_net(next_states).max(1)[1]
+            out = torch.index_select(self.online_net(next_states), 1, torch.tensor([self.idx*2, self.idx*2+1]))
+            next_actions = out.max(1)[1] + self.idx*2
             next_state_values = self.target_net(next_states).gather(1, next_actions.view(-1, 1))
         else:
-            next_state_values = self.target_net(next_states).max(1)[0]
+            next_state_values = self.target_net(next_states).data[0][self.idx*2:self.idx*2+2].unsqueeze(0).max(1)[0]
 
         # Compute V(s_{t+1}) for all next states.
         target_state_action_values = rewards + (1 - terminals) * self.discount * next_state_values.view(-1, 1)
-        # Undo volatility (which was used to prevent unnecessary gradients)
-        #target_state_action_values = Variable(target_state_action_values.data)
+
 
         # Compute Huber loss
         loss = F.smooth_l1_loss(state_action_values, target_state_action_values.detach())
@@ -133,8 +125,7 @@ class Agent():
 
         lr = self.schedule(episode)
         self.adjust_learning_rate(self.optimiser, lr)
-        #self.scheduler.step()
-        print(self.scheduler.get_lr())
+
         if self.swag and (episode+1) > self.swag_start:
             self.swag_net.collect_model(self.online_net)
             #if episode % self.sample_freq == 0:
